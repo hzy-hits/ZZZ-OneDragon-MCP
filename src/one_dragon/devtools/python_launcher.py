@@ -254,6 +254,11 @@ def fetch_latest_code(ctx: OneDragonEnvContext) -> None:
     """
     获取最新代码
     """
+    if not getattr(sys, 'frozen', False):
+        if os.environ.get('ONE_DRAGON_ENABLE_SOURCE_AUTO_UPDATE', '').lower() not in {'1', 'true', 'yes'}:
+            print_message("源码模式默认跳过代码自动更新", "INFO")
+            return
+
     if not ctx.env_config.auto_update:
         print_message("未开启代码自动更新 跳过", "INFO")
         return
