@@ -5,6 +5,7 @@ import contextlib
 import ctypes
 import datetime
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -52,8 +53,8 @@ def verify_working_directory():
     return cwd
 
 def configure_environment(ctx: OneDragonEnvContext, cwd):
-    uv_path = ctx.env_config.uv_path
-    if not uv_path or not os.path.exists(uv_path):
+    uv_path = resolve_uv_path(ctx)
+    if uv_path is None:
         print_message("获取 UV 路径失败，请运行安装程序。", "ERROR")
         sys.exit(1)
 
@@ -71,8 +72,38 @@ def configure_environment(ctx: OneDragonEnvContext, cwd):
 
     print_message(f"PYTHONPATH：{os.environ['PYTHONPATH']}", "PASS")
     print_message(f"UV_DEFAULT_INDEX：{os.environ['UV_DEFAULT_INDEX']}", "PASS")
+    print_message(f"UV：{uv_path}", "PASS")
+    return uv_path
 
-def execute_python_script(ctx: OneDragonEnvContext, app_path, no_windows: bool, args: list | None = None, piped: bool = False):
+
+def resolve_uv_path(ctx: OneDragonEnvContext) -> str | None:
+    uv_path = ctx.env_config.uv_path
+    if uv_path and os.path.exists(uv_path):
+        return uv_path
+
+    uv_path = ctx.python_service.get_os_uv_path()
+    if uv_path:
+        with contextlib.suppress(Exception):
+            ctx.env_config.uv_path = uv_path
+        return uv_path
+
+    uv_path = shutil.which("uv")
+    if uv_path and os.path.exists(uv_path):
+        with contextlib.suppress(Exception):
+            ctx.env_config.uv_path = uv_path
+        return uv_path
+
+    return None
+
+
+def execute_python_script(
+    ctx: OneDragonEnvContext,
+    app_path,
+    no_windows: bool,
+    uv_path: str,
+    args: list | None = None,
+    piped: bool = False,
+):
     app_script_path = os.environ.get('PYTHONPATH')
     for sub_path in app_path:
         app_script_path = os.path.join(app_script_path, sub_path)
@@ -81,7 +112,6 @@ def execute_python_script(ctx: OneDragonEnvContext, app_path, no_windows: bool, 
         print_message(f"PYTHONPATH 设置错误，无法找到 {app_script_path}", "ERROR")
         sys.exit(1)
 
-    uv_path = ctx.env_config.uv_path
     # 构建 uv run 命令参数
     run_args = ['run', '--frozen', app_script_path]
     if args:
@@ -240,9 +270,9 @@ def run_python(app_path, no_windows: bool = True, args: list | None = None, pipe
         cwd = verify_working_directory()
         from one_dragon.base.operation.one_dragon_env_context import OneDragonEnvContext
         ctx = OneDragonEnvContext()
-        configure_environment(ctx, cwd)
+        uv_path = configure_environment(ctx, cwd)
         fetch_latest_code(ctx)
-        execute_python_script(ctx, app_path, no_windows, args, piped)
+        execute_python_script(ctx, app_path, no_windows, uv_path, args, piped)
     except SystemExit as e:
         print_message(f"程序已退出，状态码：{e.code}", "ERROR")
     except Exception as e:
