@@ -442,6 +442,38 @@ class ZControlService:
             ),
         }
 
+    def _current_screen_name(
+        self,
+        screen_name_list: list[str] | None = None,
+    ) -> tuple[str | None, Any | None, str | None]:
+        _, image, error = self._capture_screen()
+        if error is not None:
+            return None, image, error
+
+        current_screen_name = screen_utils.get_match_screen_name(
+            self.ctx,
+            image,
+            screen_name_list=screen_name_list,
+        )
+        self.ctx.screen_loader.update_current_screen_name(current_screen_name)
+        return current_screen_name, image, None
+
+    @staticmethod
+    def _action_id(screen_name: str, area_name: str) -> str:
+        return f"{screen_name}::{area_name}"
+
+    def _parse_action_id(self, action_id: str) -> tuple[str, str]:
+        if "::" not in action_id:
+            raise ValueError(
+                "invalid action_id; expected '<screen_name>::<area_name>'"
+            )
+        screen_name, area_name = action_id.split("::", 1)
+        if not screen_name or not area_name:
+            raise ValueError(
+                "invalid action_id; expected '<screen_name>::<area_name>'"
+            )
+        return screen_name, area_name
+
     def health(self) -> dict[str, Any]:
         controller = getattr(self.ctx, "controller", None)
         return {
@@ -562,21 +594,63 @@ class ZControlService:
         self,
         screen_name_list: list[str] | None = None,
     ) -> dict[str, Any]:
-        _, image, error = self._capture_screen()
+        current_screen_name, _, error = self._current_screen_name(
+            screen_name_list=screen_name_list,
+        )
         if error is not None:
             return {"ok": False, "error": error}
 
-        current_screen_name = screen_utils.get_match_screen_name(
-            self.ctx,
-            image,
-            screen_name_list=screen_name_list,
-        )
-        self.ctx.screen_loader.update_current_screen_name(current_screen_name)
         return {
             "ok": current_screen_name is not None,
             "screen_name": current_screen_name,
             "current_screen_name": self.ctx.screen_loader.current_screen_name,
             "last_screen_name": self.ctx.screen_loader.last_screen_name,
+        }
+
+    def list_available_actions(
+        self,
+        screen_name_list: list[str] | None = None,
+        only_with_goto: bool = True,
+    ) -> dict[str, Any]:
+        current_screen_name, image, error = self._current_screen_name(
+            screen_name_list=screen_name_list,
+        )
+        if error is not None:
+            return {"ok": False, "error": error}
+        if current_screen_name is None:
+            return {
+                "ok": False,
+                "screen_name": None,
+                "actions": [],
+                "error": "current screen not recognized",
+            }
+
+        screen = self.ctx.screen_loader.get_screen(current_screen_name)
+        actions = []
+        for area in screen.area_list:
+            if only_with_goto and not area.goto_list:
+                continue
+
+            visible = True
+            if area.is_text_area or area.is_template_area:
+                visible = (
+                    screen_utils.find_area_in_screen(self.ctx, image, area)
+                    == screen_utils.FindAreaResultEnum.TRUE
+                )
+
+            if not visible:
+                continue
+
+            payload = self._area_payload(current_screen_name, area)
+            payload["action_id"] = self._action_id(current_screen_name, area.area_name)
+            payload["label"] = area.text or area.area_name
+            actions.append(payload)
+
+        return {
+            "ok": True,
+            "screen_name": current_screen_name,
+            "action_count": len(actions),
+            "actions": actions,
         }
 
     def list_screen_areas(
@@ -665,6 +739,45 @@ class ZControlService:
             "current_screen_name": self.ctx.screen_loader.current_screen_name,
             "last_screen_name": self.ctx.screen_loader.last_screen_name,
             "area": self._area_payload(screen_name, area),
+        }
+
+    def execute_action(self, action_id: str) -> dict[str, Any]:
+        try:
+            screen_name, area_name = self._parse_action_id(action_id)
+        except Exception as exc:
+            return {"ok": False, "action_id": action_id, "error": f"{type(exc).__name__}: {exc}"}
+
+        result = self.click_screen_area(screen_name=screen_name, area_name=area_name)
+        result["action_id"] = action_id
+        return result
+
+    def wait_for_screen(
+        self,
+        screen_name_list: list[str],
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 1.0,
+    ) -> dict[str, Any]:
+        deadline = time.time() + max(timeout_seconds, 0.1)
+        last_payload: dict[str, Any] | None = None
+
+        while time.time() < deadline:
+            last_payload = self.get_current_screen(screen_name_list=screen_name_list)
+            if last_payload.get("ok"):
+                return {
+                    "ok": True,
+                    "matched": True,
+                    "screen_name": last_payload.get("screen_name"),
+                    "current_screen_name": last_payload.get("current_screen_name"),
+                    "last_screen_name": last_payload.get("last_screen_name"),
+                }
+            time.sleep(max(poll_interval_seconds, 0.1))
+
+        return {
+            "ok": False,
+            "matched": False,
+            "screen_name": None,
+            "expected_screens": list(screen_name_list),
+            "last_observation": last_payload,
         }
 
     def start_app(
@@ -953,6 +1066,20 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            if parts == ["screen", "actions"]:
+                screen_name_list = query.get("screen_name", None)
+                only_with_goto = query.get("only_with_goto", ["true"])[0].lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                }
+                self._send_json(
+                    self.api.list_available_actions(
+                        screen_name_list=screen_name_list,
+                        only_with_goto=only_with_goto,
+                    )
+                )
+                return
             if len(parts) == 3 and parts[0] == "screens" and parts[2] == "areas":
                 only_with_goto = query.get("only_with_goto", ["false"])[0].lower() in {
                     "1",
@@ -1034,6 +1161,24 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
                     self.api.click_screen_area(
                         unquote(parts[1]),
                         unquote(parts[3]),
+                    )
+                )
+                return
+            if parts == ["screen", "actions", "execute"]:
+                self._send_json(
+                    self.api.execute_action(
+                        payload.get("action_id", ""),
+                    )
+                )
+                return
+            if parts == ["screen", "wait"]:
+                self._send_json(
+                    self.api.wait_for_screen(
+                        payload.get("screen_name_list", []) or [],
+                        timeout_seconds=float(payload.get("timeout_seconds", 10.0)),
+                        poll_interval_seconds=float(
+                            payload.get("poll_interval_seconds", 1.0)
+                        ),
                     )
                 )
                 return

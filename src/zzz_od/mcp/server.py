@@ -74,6 +74,17 @@ def create_mcp_server(
         return api.get_current_screen(screen_name_list=screen_name_list)
 
     @mcp.tool()
+    def list_available_actions(
+        screen_name_list: list[str] | None = None,
+        only_with_goto: bool = True,
+    ) -> dict[str, Any]:
+        """List visible actions on the current screen, already filtered for the agent."""
+        return api.list_available_actions(
+            screen_name_list=screen_name_list,
+            only_with_goto=only_with_goto,
+        )
+
+    @mcp.tool()
     def list_screen_areas(
         screen_name: str,
         only_with_goto: bool = False,
@@ -93,6 +104,24 @@ def create_mcp_server(
     def click_screen_area(screen_name: str, area_name: str) -> dict[str, Any]:
         """Find and click one configured area on screen."""
         return api.click_screen_area(screen_name=screen_name, area_name=area_name)
+
+    @mcp.tool()
+    def execute_action(action_id: str) -> dict[str, Any]:
+        """Execute one visible action returned by list_available_actions()."""
+        return api.execute_action(action_id=action_id)
+
+    @mcp.tool()
+    def wait_for_screen(
+        screen_name_list: list[str],
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 1.0,
+    ) -> dict[str, Any]:
+        """Wait until one of the target screens is recognized."""
+        return api.wait_for_screen(
+            screen_name_list=screen_name_list,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
 
     @mcp.tool()
     def start_app(
