@@ -7,6 +7,7 @@ dependencies = [
     "pyside6==6.8.0.2",
     "pyside6-fluent-widgets==1.11.1",
     "mcp[cli]>=1.0",
+    "pyuac==0.0.3; sys_platform == 'win32'",
     "pyyaml==6.0.1",
     "opencv-python==4.10.0.84",
     "pyautogui==0.9.54",
@@ -30,7 +31,6 @@ dev = [
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
     "ruff>=0.12.10",
-    "pyuac==0.0.3",
 ]
 
 gamepad = [

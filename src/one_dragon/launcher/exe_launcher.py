@@ -1,7 +1,12 @@
 import argparse
+import ctypes
+import subprocess
 import sys
 
-import pyuac
+try:
+    import pyuac
+except ModuleNotFoundError:  # pragma: no cover - Windows-only runtime fallback
+    pyuac = None
 
 from one_dragon.launcher.launcher_base import LauncherBase
 
@@ -43,6 +48,32 @@ class ExeLauncher(LauncherBase):
         """运行GUI模式，子类实现"""
         pass
 
+    def _is_user_admin(self) -> bool:
+        if pyuac is not None:
+            return pyuac.isUserAdmin()
+
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+
+    def _run_as_admin(self) -> None:
+        if pyuac is not None:
+            pyuac.runAsAdmin(sys.argv, wait=False)
+            return
+
+        params = subprocess.list2cmdline(sys.argv)
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            sys.executable,
+            params,
+            None,
+            1,
+        )
+        if result <= 32:
+            raise RuntimeError(f"runAsAdmin failed with ShellExecuteW code {result}")
+
     def main(self, args) -> None:
         """执行主要逻辑"""
         if args.version:
@@ -52,8 +83,8 @@ class ExeLauncher(LauncherBase):
             print("错误：参数 --close-game, --shutdown, --instance 只能在指定 --onedragon 时使用")
             sys.exit(1)
 
-        if not pyuac.isUserAdmin():
-            pyuac.runAsAdmin(sys.argv, wait=False)
+        if not self._is_user_admin():
+            self._run_as_admin()
             sys.exit(0)
         else:
             if args.onedragon:
