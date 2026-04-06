@@ -69,6 +69,32 @@ def create_mcp_server(
         return payload
 
     @mcp.tool()
+    def get_current_screen(screen_name_list: list[str] | None = None) -> dict[str, Any]:
+        """Recognize the current screen from the latest screenshot."""
+        return api.get_current_screen(screen_name_list=screen_name_list)
+
+    @mcp.tool()
+    def list_screen_areas(
+        screen_name: str,
+        only_with_goto: bool = False,
+    ) -> dict[str, Any]:
+        """List configured areas for one screen, including rects and goto targets."""
+        return api.list_screen_areas(
+            screen_name=screen_name,
+            only_with_goto=only_with_goto,
+        )
+
+    @mcp.tool()
+    def find_screen_area(screen_name: str, area_name: str) -> dict[str, Any]:
+        """Check whether one configured area is currently visible on screen."""
+        return api.find_screen_area(screen_name=screen_name, area_name=area_name)
+
+    @mcp.tool()
+    def click_screen_area(screen_name: str, area_name: str) -> dict[str, Any]:
+        """Find and click one configured area on screen."""
+        return api.click_screen_area(screen_name=screen_name, area_name=area_name)
+
+    @mcp.tool()
     def start_app(
         app_id: str,
         config: dict[str, Any] | None = None,

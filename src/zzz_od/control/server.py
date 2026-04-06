@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from one_dragon.base.screen import screen_utils
 from one_dragon.utils import os_utils
 from one_dragon.utils.log_utils import log
 
@@ -39,6 +40,25 @@ def _status_label(raw_status: Any) -> str:
         "STOP": "not_run",
     }
     return mapping.get(value, str(value).lower())
+
+
+def _find_area_label(raw_status: Any) -> str:
+    mapping = {
+        getattr(screen_utils.FindAreaResultEnum, "TRUE", None): "found",
+        getattr(screen_utils.FindAreaResultEnum, "FALSE", None): "not_found",
+        getattr(screen_utils.FindAreaResultEnum, "AREA_NO_CONFIG", None): "area_not_configured",
+    }
+    return mapping.get(raw_status, str(getattr(raw_status, "name", raw_status)).lower())
+
+
+def _click_area_label(raw_status: Any) -> str:
+    mapping = {
+        getattr(screen_utils.OcrClickResultEnum, "OCR_CLICK_SUCCESS", None): "clicked",
+        getattr(screen_utils.OcrClickResultEnum, "OCR_CLICK_FAIL", None): "click_failed",
+        getattr(screen_utils.OcrClickResultEnum, "OCR_CLICK_NOT_FOUND", None): "not_found",
+        getattr(screen_utils.OcrClickResultEnum, "AREA_NO_CONFIG", None): "area_not_configured",
+    }
+    return mapping.get(raw_status, str(getattr(raw_status, "name", raw_status)).lower())
 
 
 def _run_state_value(run_context: Any) -> str:
@@ -377,6 +397,51 @@ class ZControlService:
             "server are running at the same privilege level",
         )
 
+    def _capture_screen(self) -> tuple[Any | None, Any | None, str | None]:
+        controller = getattr(self.ctx, "controller", None)
+        if controller is None:
+            return None, None, "controller unavailable"
+
+        try:
+            screen, image = controller.screenshot()
+        except Exception as exc:
+            return None, None, f"failed to capture screenshot: {type(exc).__name__}: {exc}"
+
+        if image is None:
+            return screen, image, "screenshot unavailable"
+
+        return screen, image, None
+
+    def _area_payload(self, screen_name: str, area: Any) -> dict[str, Any]:
+        rect = area.rect
+        return {
+            "screen_name": screen_name,
+            "area_name": area.area_name,
+            "rect": {
+                "x1": rect.x1,
+                "y1": rect.y1,
+                "x2": rect.x2,
+                "y2": rect.y2,
+                "width": rect.width,
+                "height": rect.height,
+            },
+            "center": {"x": area.center.x, "y": area.center.y},
+            "text": area.text or None,
+            "template_id": area.template_id or None,
+            "template_sub_dir": area.template_sub_dir or None,
+            "goto_list": list(area.goto_list or []),
+            "id_mark": bool(area.id_mark),
+            "pc_alt": bool(area.pc_alt),
+            "gamepad_key": area.gamepad_key or None,
+            "match_type": (
+                "text"
+                if area.is_text_area
+                else "template"
+                if area.is_template_area
+                else "rect"
+            ),
+        }
+
     def health(self) -> dict[str, Any]:
         controller = getattr(self.ctx, "controller", None)
         return {
@@ -484,23 +549,122 @@ class ZControlService:
         }
 
     def get_screenshot(self) -> dict[str, Any]:
-        controller = getattr(self.ctx, "controller", None)
-        if controller is None:
-            return {"ok": False, "error": "controller unavailable"}
-        try:
-            _, image = controller.screenshot()
-        except Exception as exc:
-            return {
-                "ok": False,
-                "error": f"failed to capture screenshot: {type(exc).__name__}: {exc}",
-            }
-
-        if image is None:
-            return {"ok": False, "error": "screenshot unavailable"}
+        _, image, error = self._capture_screen()
+        if error is not None:
+            return {"ok": False, "error": error}
 
         return {
             "ok": True,
             "image_base64": _encode_png_base64(image),
+        }
+
+    def get_current_screen(
+        self,
+        screen_name_list: list[str] | None = None,
+    ) -> dict[str, Any]:
+        _, image, error = self._capture_screen()
+        if error is not None:
+            return {"ok": False, "error": error}
+
+        current_screen_name = screen_utils.get_match_screen_name(
+            self.ctx,
+            image,
+            screen_name_list=screen_name_list,
+        )
+        self.ctx.screen_loader.update_current_screen_name(current_screen_name)
+        return {
+            "ok": current_screen_name is not None,
+            "screen_name": current_screen_name,
+            "current_screen_name": self.ctx.screen_loader.current_screen_name,
+            "last_screen_name": self.ctx.screen_loader.last_screen_name,
+        }
+
+    def list_screen_areas(
+        self,
+        screen_name: str,
+        only_with_goto: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            screen = self.ctx.screen_loader.get_screen(screen_name)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "screen_name": screen_name,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        areas = []
+        for area in screen.area_list:
+            if only_with_goto and not area.goto_list:
+                continue
+            areas.append(self._area_payload(screen_name, area))
+
+        return {
+            "ok": True,
+            "screen_name": screen_name,
+            "area_count": len(areas),
+            "areas": areas,
+        }
+
+    def find_screen_area(
+        self,
+        screen_name: str,
+        area_name: str,
+    ) -> dict[str, Any]:
+        _, image, error = self._capture_screen()
+        if error is not None:
+            return {"ok": False, "error": error, "screen_name": screen_name, "area_name": area_name}
+
+        area = self.ctx.screen_loader.get_area(screen_name, area_name)
+        if area is None:
+            return {
+                "ok": False,
+                "screen_name": screen_name,
+                "area_name": area_name,
+                "status": "area_not_configured",
+            }
+
+        result = screen_utils.find_area(self.ctx, image, screen_name, area_name)
+        return {
+            "ok": True,
+            "screen_name": screen_name,
+            "area_name": area_name,
+            "status": _find_area_label(result),
+            "found": result == screen_utils.FindAreaResultEnum.TRUE,
+            "area": self._area_payload(screen_name, area),
+        }
+
+    def click_screen_area(
+        self,
+        screen_name: str,
+        area_name: str,
+    ) -> dict[str, Any]:
+        _, image, error = self._capture_screen()
+        if error is not None:
+            return {"ok": False, "error": error, "screen_name": screen_name, "area_name": area_name}
+
+        area = self.ctx.screen_loader.get_area(screen_name, area_name)
+        if area is None:
+            return {
+                "ok": False,
+                "screen_name": screen_name,
+                "area_name": area_name,
+                "status": "area_not_configured",
+            }
+
+        result = screen_utils.find_and_click_area(self.ctx, image, screen_name, area_name)
+        if result == screen_utils.OcrClickResultEnum.OCR_CLICK_SUCCESS and area.goto_list:
+            self.ctx.screen_loader.update_current_screen_name(area.goto_list[0])
+
+        return {
+            "ok": result == screen_utils.OcrClickResultEnum.OCR_CLICK_SUCCESS,
+            "screen_name": screen_name,
+            "area_name": area_name,
+            "status": _click_area_label(result),
+            "clicked": result == screen_utils.OcrClickResultEnum.OCR_CLICK_SUCCESS,
+            "current_screen_name": self.ctx.screen_loader.current_screen_name,
+            "last_screen_name": self.ctx.screen_loader.last_screen_name,
+            "area": self._area_payload(screen_name, area),
         }
 
     def start_app(
@@ -781,6 +945,35 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
             if parts == ["screenshot"]:
                 self._send_json(self.api.get_screenshot())
                 return
+            if parts == ["screen", "current"]:
+                screen_name_list = query.get("screen_name", None)
+                self._send_json(
+                    self.api.get_current_screen(
+                        screen_name_list=screen_name_list,
+                    )
+                )
+                return
+            if len(parts) == 3 and parts[0] == "screens" and parts[2] == "areas":
+                only_with_goto = query.get("only_with_goto", ["false"])[0].lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                }
+                self._send_json(
+                    self.api.list_screen_areas(
+                        unquote(parts[1]),
+                        only_with_goto=only_with_goto,
+                    )
+                )
+                return
+            if len(parts) == 4 and parts[0] == "screens" and parts[2] == "areas":
+                self._send_json(
+                    self.api.find_screen_area(
+                        unquote(parts[1]),
+                        unquote(parts[3]),
+                    )
+                )
+                return
             if parts == ["instances"]:
                 self._send_json(self.api.list_instances())
                 return
@@ -834,6 +1027,14 @@ class _ControlRequestHandler(BaseHTTPRequestHandler):
             if parts == ["instances", "switch"]:
                 self._send_json(
                     self.api.switch_instance(_safe_int(payload.get("instance_idx"), 0))
+                )
+                return
+            if len(parts) == 4 and parts[0] == "screens" and parts[2] == "areas":
+                self._send_json(
+                    self.api.click_screen_area(
+                        unquote(parts[1]),
+                        unquote(parts[3]),
+                    )
                 )
                 return
 
