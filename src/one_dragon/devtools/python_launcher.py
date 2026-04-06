@@ -29,6 +29,7 @@ def print_message(message, level="INFO"):
 
 def verify_working_directory():
     # 设置当前工作目录
+    cwd = None
     if getattr(sys, 'frozen', False):
         cwd = os.path.dirname(sys.executable)
 
